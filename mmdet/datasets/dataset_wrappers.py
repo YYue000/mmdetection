@@ -12,6 +12,8 @@ from torch.utils.data.dataset import ConcatDataset as _ConcatDataset
 from .builder import DATASETS, PIPELINES
 from .coco import CocoDataset
 
+from .pipelines.transforms import RandomFlip
+
 
 @DATASETS.register_module()
 class ConcatDataset(_ConcatDataset):
@@ -423,3 +425,32 @@ class MultiImageMixDataset:
             isinstance(skip_type_key, str) for skip_type_key in skip_type_keys
         ])
         self._skip_type_keys = skip_type_keys
+
+
+@DATASETS.register_module()
+class RefDataset:
+    """
+    Get images with one reference
+    """
+
+    def __init__(self, dataset, ref_dataset):
+        self.dataset = dataset
+        self.ref_dataset = ref_dataset
+
+        self.CLASSES = dataset.CLASSES
+        if hasattr(self.dataset, 'flag'):
+            self.flag = self.dataset.flag
+        
+        self.flat_collate = True
+        
+    def __getitem__(self, idx):
+        results = self.dataset[idx]
+        flip = results.pop('flip', False)
+        for tr in self.ref_dataset.pipeline.transforms:
+            if isinstance(tr, RandomFlip):
+                tr.flip_ratio = float(flip)
+        ref_results = self.ref_dataset[idx]
+        return results, ref_results
+
+
+

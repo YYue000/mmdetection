@@ -872,6 +872,8 @@ class RandomCrop:
             crop_size = np.asarray(self.crop_size, dtype=np.float32)
             crop_h, crop_w = crop_size + np.random.rand(2) * (1 - crop_size)
             return int(h * crop_h + 0.5), int(w * crop_w + 0.5)
+        else:
+            raise NotImplementedError
 
     def __call__(self, results):
         """Call function to randomly crop images, bounding boxes, masks,
@@ -896,6 +898,26 @@ class RandomCrop:
         repr_str += f'allow_negative_crop={self.allow_negative_crop}, '
         repr_str += f'bbox_clip_border={self.bbox_clip_border})'
         return repr_str
+
+
+@PIPELINES.register_module()
+class PRandomCrop(RandomCrop):
+    def __init__(self,
+                 crop_prob,
+                 crop_size,
+                 crop_type='absolute',
+                 allow_negative_crop=False,
+                 recompute_bbox=False,
+                 bbox_clip_border=True):
+        super(PRandomCrop, self).__init__(crop_size, crop_type,
+                allow_negative_crop, recompute_bbox, bbox_clip_border)
+        self.crop_prob = crop_prob
+
+    def __call__(self, results):
+        if random.random() < self.crop_prob:
+            return super().__call__(results)
+        else:
+            return results
 
 
 @PIPELINES.register_module()
@@ -1315,6 +1337,17 @@ class Corrupt:
         repr_str += f'severity={self.severity})'
         return repr_str
 
+
+@PIPELINES.register_module()
+class PCorrupt(Corrupt):
+    def __init__(self, p, corruption, severity=1):
+        super(PCorrupt, self).__init__(corruption, severity)
+        self.prob = p
+
+    def __call__(self, results):
+        if random.random()<self.prob:
+            return super().__call__(results)
+        return results
 
 @PIPELINES.register_module()
 class Albu:
@@ -1942,7 +1975,6 @@ class CutOut:
         repr_str += f'fill_in={self.fill_in})'
         return repr_str
 
-
 @PIPELINES.register_module()
 class Mosaic:
     """Mosaic augmentation.
@@ -2210,6 +2242,27 @@ class Mosaic:
         repr_str += f'min_bbox_size={self.min_bbox_size}, '
         repr_str += f'skip_filter={self.skip_filter})'
         return repr_str
+
+
+@PIPELINES.register_module()
+class PMosaic(Mosaic):
+    def __init__(self,
+                 prob,
+                 img_scale=(640, 640),
+                 center_ratio_range=(0.5, 1.5),
+                 min_bbox_size=0,
+                 bbox_clip_border=True,
+                 skip_filter=True,
+                 pad_val=114):
+        super(PMosaic, self).__init__(img_scale, 
+                center_ratio_range, min_bbox_size,
+                bbox_clip_border, skip_filter, pad_val)
+        self.prob = prob
+
+    def __call__(self, results):
+        if random.random()>self.prob:
+            return self._mosaic_transform(results)
+        return results
 
 
 @PIPELINES.register_module()

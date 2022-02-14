@@ -59,7 +59,9 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                      type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=1.0),
                  train_cfg=None,
                  test_cfg=None,
-                 init_cfg=dict(type='Normal', layer='Conv2d', std=0.01)):
+                 init_cfg=dict(type='Normal', layer='Conv2d', std=0.01),
+                 loss_dist=None):
+
         super(AnchorHead, self).__init__(init_cfg)
         self.in_channels = in_channels
         self.num_classes = num_classes
@@ -77,6 +79,14 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         self.bbox_coder = build_bbox_coder(bbox_coder)
         self.loss_cls = build_loss(loss_cls)
         self.loss_bbox = build_loss(loss_bbox)
+        
+        if loss_dist is not None:
+            self.loss_dist_feature = loss_dist.pop('loss_dist_feature')
+            assert self.loss_dist_feature in ['pred', 'logits']
+            self.loss_dist = build_loss(loss_dist)
+        else:
+            self.loss_dist = None
+
         self.train_cfg = train_cfg
         self.test_cfg = test_cfg
         if self.train_cfg:
@@ -425,6 +435,13 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
+        # distance loss
+        if self.loss_dist is not None and self.loss_dist_feature == 'pred':
+            _, A4, H, W = bbox_pred.shape
+            box_feature = bbox_pred.reshape(-1, 2, A4*H*W)
+            _, AC, H, W = cls_score.shape
+            cls_feature = cls_score.reshape(-1, 2, AC*H*W)
+
         # classification loss
         labels = labels.reshape(-1)
         label_weights = label_weights.reshape(-1)
@@ -447,7 +464,20 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_targets,
             bbox_weights,
             avg_factor=num_total_samples)
-        return loss_cls, loss_bbox
+
+
+        if self.loss_dist is not None and self.loss_dist_feature == 'logits':
+            box_feature = bbox_pred.reshape(-1, 2, 4)
+            cls_feature = cls_score.reshape(-1, 2, self.cls_out_channels)
+
+        if self.loss_dist is not None:
+            loss_dist_cls = self.loss_dist(cls_feature[:,0,:], cls_feature[:,1,:])
+            loss_dist_box = self.loss_dist(box_feature[:,0,:], box_feature[:,1,:])
+            loss_dist = loss_dist_cls + loss_dist_box
+        else:
+            loss_dist = None
+
+        return loss_cls, loss_bbox, loss_dist
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def loss(self,
@@ -507,7 +537,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         all_anchor_list = images_to_levels(concat_anchor_list,
                                            num_level_anchors)
 
-        losses_cls, losses_bbox = multi_apply(
+        losses_cls, losses_bbox, losses_dist = multi_apply(
             self.loss_single,
             cls_scores,
             bbox_preds,
@@ -517,7 +547,10 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_targets_list,
             bbox_weights_list,
             num_total_samples=num_total_samples)
-        return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
+        if self.loss_dist: 
+            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dist=losses_dist)
+        else:
+            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
 
     def aug_test(self, feats, img_metas, rescale=False):
         """Test function with test time augmentation.

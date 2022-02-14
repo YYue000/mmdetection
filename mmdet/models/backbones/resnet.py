@@ -382,6 +382,7 @@ class ResNet(BaseModule):
                  conv_cfg=None,
                  norm_cfg=dict(type='BN', requires_grad=True),
                  norm_eval=True,
+                 #norm_update_param=False,
                  dcn=None,
                  stage_with_dcn=(False, False, False, False),
                  plugins=None,
@@ -445,6 +446,7 @@ class ResNet(BaseModule):
         self.norm_cfg = norm_cfg
         self.with_cp = with_cp
         self.norm_eval = norm_eval
+        #self.norm_update_param = norm_update_param
         self.dcn = dcn
         self.stage_with_dcn = stage_with_dcn
         if dcn is not None:
@@ -613,20 +615,33 @@ class ResNet(BaseModule):
     def _freeze_stages(self):
         if self.frozen_stages >= 0:
             if self.deep_stem:
-                self.stem.eval()
+                #self.stem.eval()
                 for param in self.stem.parameters():
                     param.requires_grad = False
             else:
-                self.norm1.eval()
+                #self.norm1.eval()
                 for m in [self.conv1, self.norm1]:
                     for param in m.parameters():
                         param.requires_grad = False
 
         for i in range(1, self.frozen_stages + 1):
             m = getattr(self, f'layer{i}')
-            m.eval()
+            #m.eval()
             for param in m.parameters():
                 param.requires_grad = False
+        
+
+        """
+        if self.norm_update_param:
+            for m in self.modules():
+                # trick: eval have effect on BatchNorm only
+                if isinstance(m, _BatchNorm):
+                    m.weight.requires_grad = True
+                    m.bias.requires_grad = True
+            print(self)
+        """
+
+
 
     def forward(self, x):
         """Forward function."""

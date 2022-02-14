@@ -4,6 +4,7 @@ import platform
 import random
 import warnings
 from functools import partial
+from collections import Sequence
 
 import numpy as np
 from mmcv.parallel import collate
@@ -57,7 +58,8 @@ def _concat_dataset(cfg, default_args=None):
 
 def build_dataset(cfg, default_args=None):
     from .dataset_wrappers import (ConcatDataset, RepeatDataset,
-                                   ClassBalancedDataset, MultiImageMixDataset)
+                                   ClassBalancedDataset, MultiImageMixDataset,
+                                   RefDataset)
     if isinstance(cfg, (list, tuple)):
         dataset = ConcatDataset([build_dataset(c, default_args) for c in cfg])
     elif cfg['type'] == 'ConcatDataset':
@@ -75,6 +77,12 @@ def build_dataset(cfg, default_args=None):
         cp_cfg['dataset'] = build_dataset(cp_cfg['dataset'])
         cp_cfg.pop('type')
         dataset = MultiImageMixDataset(**cp_cfg)
+    elif cfg['type'] == 'RefDataset':
+        cp_cfg = copy.deepcopy(cfg)
+        cp_cfg['dataset'] = build_dataset(cp_cfg['dataset'])
+        cp_cfg['ref_dataset'] = build_dataset(cp_cfg['ref_dataset'])
+        cp_cfg.pop('type')
+        dataset = RefDataset(**cp_cfg)
     elif isinstance(cfg.get('ann_file'), (list, tuple)):
         dataset = _concat_dataset(cfg, default_args)
     else:
@@ -183,7 +191,7 @@ def build_dataloader(dataset,
         sampler=sampler,
         num_workers=num_workers,
         batch_sampler=batch_sampler,
-        collate_fn=partial(collate, samples_per_gpu=samples_per_gpu),
+        collate_fn=get_collate_fn(dataset, samples_per_gpu),
         pin_memory=False,
         worker_init_fn=init_fn,
         **kwargs)
@@ -197,3 +205,18 @@ def worker_init_fn(worker_id, num_workers, rank, seed):
     worker_seed = num_workers * rank + worker_id + seed
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+
+def flat_collate_fn(batch, samples_per_gpu):
+    assert isinstance(batch[0], Sequence)
+    _batch = [_ for b in batch for _ in b]
+    return collate(_batch, samples_per_gpu)
+
+def get_collate_fn(dataset, samples_per_gpu):
+    flat_flag = getattr(dataset,'flat_collate', False)
+    if flat_flag:
+        return partial(flat_collate_fn, samples_per_gpu=samples_per_gpu)
+    else:
+        return partial(collate, samples_per_gpu=samples_per_gpu)
+
+
+

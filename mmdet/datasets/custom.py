@@ -64,7 +64,8 @@ class CustomDataset(Dataset):
                  proposal_file=None,
                  test_mode=False,
                  filter_empty_gt=True,
-                 file_client_args=dict(backend='disk')):
+                 file_client_args=dict(backend='disk'),
+                 reference_file=None):
         self.ann_file = ann_file
         self.data_root = data_root
         self.img_prefix = img_prefix
@@ -74,6 +75,8 @@ class CustomDataset(Dataset):
         self.filter_empty_gt = filter_empty_gt
         self.CLASSES = self.get_classes(classes)
         self.file_client = mmcv.FileClient(**file_client_args)
+
+        self.reference_file = reference_file
 
         # join paths if data_root is specified
         if self.data_root is not None:
@@ -87,6 +90,9 @@ class CustomDataset(Dataset):
                     or osp.isabs(self.proposal_file)):
                 self.proposal_file = osp.join(self.data_root,
                                               self.proposal_file)
+            if self.reference_file is not None and  not osp.isabs(self.reference_file):
+                self.reference_file = osp.join(self.data_root, self.reference_file)
+
         # load annotations (and proposals)
         if hasattr(self.file_client, 'get_local_path'):
             with self.file_client.get_local_path(self.ann_file) as local_path:
@@ -114,17 +120,39 @@ class CustomDataset(Dataset):
         else:
             self.proposals = None
 
+        if self.reference_file is not None:
+            if hasattr(self.file_client, 'get_local_path'):
+                with self.file_client.get_local_path(
+                        self.reference_file) as local_path:
+                    self.reference_data = self.load_annotations(local_path)
+            else:
+                warnings.warn(
+                    'The used MMCV version does not have get_local_path. '
+                    f'We treat the {self.ann_file} as local paths and it '
+                    'might cause errors if the path is not a local path. '
+                    'Please use MMCV>= 1.3.16 if you meet errors.')
+                self.reference_data = self.load_annotations(self.reference_file)
+        else:
+            self.reference_data = None
         # filter images too small and containing no annotations
         if not test_mode:
             valid_inds = self._filter_imgs()
             self.data_infos = [self.data_infos[i] for i in valid_inds]
             if self.proposals is not None:
                 self.proposals = [self.proposals[i] for i in valid_inds]
+
+            if self.reference_data is not None:
+                self.reference_data = [self.reference_data[i] for i in valid_inds]
+
             # set group flag for the sampler
             self._set_group_flag()
 
         # processing pipeline
         self.pipeline = Compose(pipeline)
+        if self.reference_data is not None:
+            self.ref_pipeline = Compose(pipeline)
+        else:
+            self.ref_pipeline = None
 
     def __len__(self):
         """Total number of samples of data."""
@@ -236,7 +264,24 @@ class CustomDataset(Dataset):
         if self.proposals is not None:
             results['proposals'] = self.proposals[idx]
         self.pre_pipeline(results)
-        return self.pipeline(results)
+        res = self.pipeline(results)
+
+        if self.reference_data is not None:
+            img_info = self.reference_data[idx]
+            print(self.reference_data[idx].keys())
+            print(self.data_infos[idx].keys())
+            ann_info = self.reference_data[idx]['ann']
+            ref_results = dict(img_info=img_info, ann_info=ann_info)
+
+            self.pre_pipeline(ref_results)
+            flip = res.pop('flip', False)
+            if flip:
+                print(self.ref_pipeline)
+            ref = self.ref_pipeline(ref_results)
+
+
+        return res
+        #return self.pipeline(results)
 
     def prepare_test_img(self, idx):
         """Get testing data  after pipeline.

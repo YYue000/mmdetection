@@ -124,7 +124,14 @@ def train_detector(model,
             model.cuda(cfg.gpu_ids[0]), device_ids=cfg.gpu_ids)
 
     # build runner
-    optimizer = build_optimizer(model, cfg.optimizer)
+    update_bn_only = cfg.optimizer.pop('update_bn_only', False)
+    if update_bn_only:
+        from torch.nn.modules.batchnorm import _BatchNorm
+        modules = [_ for _ in model.modules() if isinstance(_, _BatchNorm)]
+        modules = torch.nn.ModuleList(modules)
+        optimizer = build_optimizer(modules, cfg.optimizer)
+    else:
+        optimizer = build_optimizer(model, cfg.optimizer)
 
     if 'runner' not in cfg:
         cfg.runner = {
