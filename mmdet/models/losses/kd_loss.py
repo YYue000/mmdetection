@@ -46,12 +46,13 @@ class KnowledgeDistillationKLDivLoss(nn.Module):
         T (int): Temperature for distillation.
     """
 
-    def __init__(self, reduction='mean', loss_weight=1.0, T=10):
+    def __init__(self, reduction='mean', loss_weight=1.0, T=10, detach_target=True):
         super(KnowledgeDistillationKLDivLoss, self).__init__()
         assert T >= 1
         self.reduction = reduction
         self.loss_weight = loss_weight
         self.T = T
+        self.detach_target=detach_target
 
     def forward(self,
                 pred,
@@ -83,6 +84,7 @@ class KnowledgeDistillationKLDivLoss(nn.Module):
             weight,
             reduction=reduction,
             avg_factor=avg_factor,
-            T=self.T)
+            T=self.T,
+            detach_target=self.detach_target)
 
         return loss_kd

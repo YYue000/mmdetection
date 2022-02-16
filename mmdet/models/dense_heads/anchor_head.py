@@ -83,6 +83,12 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         if loss_dist is not None:
             self.loss_dist_feature = loss_dist.pop('loss_dist_feature')
             assert self.loss_dist_feature in ['pred', 'logits']
+            loss_dist_input = loss_dist.pop('loss_input', 'both')
+            assert loss_dist_input in ['cls', 'loc', 'both']
+            if loss_dist_input == 'both':
+                self.loss_dist_input = ['cls', 'loc']
+            else:
+                self.loss_dist_input = [loss_dist_input]
             self.loss_dist = build_loss(loss_dist)
         else:
             self.loss_dist = None
@@ -435,12 +441,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
-        # distance loss
-        if self.loss_dist is not None and self.loss_dist_feature == 'pred':
-            _, A4, H, W = bbox_pred.shape
-            box_feature = bbox_pred.reshape(-1, 2, A4*H*W)
-            _, AC, H, W = cls_score.shape
-            cls_feature = cls_score.reshape(-1, 2, AC*H*W)
+        B, A4, H, W = bbox_pred.shape
 
         # classification loss
         labels = labels.reshape(-1)
@@ -465,14 +466,18 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_weights,
             avg_factor=num_total_samples)
 
-
-        if self.loss_dist is not None and self.loss_dist_feature == 'logits':
-            box_feature = bbox_pred.reshape(-1, 2, 4)
-            cls_feature = cls_score.reshape(-1, 2, self.cls_out_channels)
+        # distance loss
+        if self.loss_dist is not None and self.loss_dist_feature == 'pred':
+            box_feature = bbox_pred.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)
+            cls_feature = cls_score.reshape(B//2, 2, -1, self.cls_out_channels).permute(1, 0, 2, 3).reshape(2, -1, self.cls_out_channels)
 
         if self.loss_dist is not None:
-            loss_dist_cls = self.loss_dist(cls_feature[:,0,:], cls_feature[:,1,:])
-            loss_dist_box = self.loss_dist(box_feature[:,0,:], box_feature[:,1,:])
+            loss_dist_cls, loss_dist_box = 0, 0
+            if 'cls' in self.loss_dist_input:
+                loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1])
+            if 'loc' in self.loss_dist_input:
+                loss_dist_box = self.loss_dist(box_feature[0], box_feature[1])
+
             loss_dist = loss_dist_cls + loss_dist_box
         else:
             loss_dist = None
