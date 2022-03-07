@@ -565,6 +565,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
 
     @force_fp32(apply_to=('feature'))
     def loss_dist_single_fpn_feature(self, feature):
+        B = feature.shape[0]
         feature = feature.reshape(B//2, 2, -1).permute(1,0,2)
         return self.loss_dist(feature[0], feature[1])
         
@@ -572,7 +573,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         if self.loss_dist is None: return
         
         if self.loss_dist_feature == 'fpn_feat':
-            self.loss_dist_value = multi_apply(self.loss_dist_single_fpn_feature, feats)
+            self.loss_dist_value = [self.loss_dist_single_fpn_feature(f) for f in feats[0]]
         elif self.loss_dist_feature == 'pred':
             cls_scores, bbox_preds = outs
             self.loss_dist_value = [self.loss_dist_single_pred(c,b) for c,b in zip(cls_scores, bbox_preds)]
