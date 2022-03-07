@@ -81,8 +81,8 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         self.loss_bbox = build_loss(loss_bbox)
         
         if loss_dist is not None:
-            self.loss_dist_feature = loss_dist.pop('loss_dist_feature')
-            assert self.loss_dist_feature in ['pred', 'logits']
+            self.loss_dist_feature = loss_dist.pop('loss_dist_feature', 'pred')
+            assert self.loss_dist_feature in ['pred', 'fpn_feat', 'logits']
             loss_dist_input = loss_dist.pop('loss_input', 'both')
             assert loss_dist_input in ['cls', 'loc', 'both']
             if loss_dist_input == 'both':
@@ -90,6 +90,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             else:
                 self.loss_dist_input = [loss_dist_input]
             self.loss_dist = build_loss(loss_dist)
+            self.register_forward_hook(self.loss_dist_hook_fn)
         else:
             self.loss_dist = None
 
@@ -183,6 +184,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                     is num_base_priors * 4.
         """
         return multi_apply(self.forward_single, feats)
+
 
     def get_anchors(self, featmap_sizes, img_metas, device='cuda'):
         """Get anchors according to feature map sizes.
@@ -465,24 +467,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_targets,
             bbox_weights,
             avg_factor=num_total_samples)
-
-        # distance loss
-        if self.loss_dist is not None and self.loss_dist_feature == 'pred':
-            box_feature = bbox_pred.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)
-            cls_feature = cls_score.reshape(B//2, 2, -1, self.cls_out_channels).permute(1, 0, 2, 3).reshape(2, -1, self.cls_out_channels)
-
-        if self.loss_dist is not None:
-            loss_dist_cls, loss_dist_box = 0, 0
-            if 'cls' in self.loss_dist_input:
-                loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1])
-            if 'loc' in self.loss_dist_input:
-                loss_dist_box = self.loss_dist(box_feature[0], box_feature[1])
-
-            loss_dist = loss_dist_cls + loss_dist_box
-        else:
-            loss_dist = None
-
-        return loss_cls, loss_bbox, loss_dist
+        return loss_cls, loss_bbox
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
     def loss(self,
@@ -542,7 +527,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         all_anchor_list = images_to_levels(concat_anchor_list,
                                            num_level_anchors)
 
-        losses_cls, losses_bbox, losses_dist = multi_apply(
+        losses_cls, losses_bbox = multi_apply(
             self.loss_single,
             cls_scores,
             bbox_preds,
@@ -552,10 +537,48 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_targets_list,
             bbox_weights_list,
             num_total_samples=num_total_samples)
-        if self.loss_dist: 
-            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dist=losses_dist)
+
+        if self.loss_dist is not None:
+            print('loss_dist_value',self.loss_dist_value)
+            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dist=self.loss_dist_value)
         else:
             return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
+
+    @force_fp32(apply_to=('cls_score', 'bbox_pred'))
+    def loss_dist_single_pred(self, cls_score, bbox_pred):
+        # distance loss
+        if self.loss_dist is None:
+            return None
+        
+        B = cls_score.shape[0]
+        assert self.loss_dist_feature == 'pred'
+        box_feature = bbox_pred.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)
+        cls_feature = cls_score.reshape(B//2, 2, -1, self.cls_out_channels).permute(1, 0, 2, 3).reshape(2, -1, self.cls_out_channels)
+
+        loss_dist_cls, loss_dist_box = 0, 0
+        if 'cls' in self.loss_dist_input:
+            loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1])
+        if 'loc' in self.loss_dist_input:
+            loss_dist_box = self.loss_dist(box_feature[0], box_feature[1])
+
+        loss_dist = loss_dist_cls + loss_dist_box
+        return loss_dist
+
+    @force_fp32(apply_to=('feature'))
+    def loss_dist_single_fpn_feature(self, feature):
+        feature = feature.reshape(B//2, 2, -1).permute(1,0,2)
+        return self.loss_dist(feature[0], feature[1])
+        
+    def loss_dist_hook_fn(self, mod, feats, outs):
+        if self.loss_dist is None: return
+        
+        if self.loss_dist_feature == 'fpn_feat':
+            self.loss_dist_value = multi_apply(self.loss_dist_single_fpn_feature, feats)
+        elif self.loss_dist_feature == 'pred':
+            cls_scores, bbox_preds = outs
+            self.loss_dist_value = [self.loss_dist_single_pred(c,b) for c,b in zip(cls_scores, bbox_preds)]
+        else:
+            raise NotImplementedError
 
     def aug_test(self, feats, img_metas, rescale=False):
         """Test function with test time augmentation.
