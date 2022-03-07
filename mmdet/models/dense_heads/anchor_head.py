@@ -539,7 +539,6 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             num_total_samples=num_total_samples)
 
         if self.loss_dist is not None:
-            print('loss_dist_value',self.loss_dist_value)
             return dict(loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dist=self.loss_dist_value)
         else:
             return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
