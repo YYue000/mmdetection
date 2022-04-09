@@ -1328,7 +1328,7 @@ class Corrupt:
         results['img'] = corrupt(
             results['img'].astype(np.uint8),
             corruption_name=self.corruption,
-            severity=self.severity)
+            severity=self.severity).astype(np.float32)
         return results
 
     def __repr__(self):
