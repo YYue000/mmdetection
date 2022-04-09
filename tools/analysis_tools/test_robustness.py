@@ -162,6 +162,7 @@ def parse_args():
         choices=['all', 'benchmark'],
         default='benchmark',
         help='aggregate all results or only those for benchmark corruptions')
+    parser.add_argument('--gpu-id',type=int, default=0)
     parser.add_argument(
         '--cfg-options',
         nargs='+',
@@ -297,7 +298,7 @@ def main():
                 model.CLASSES = dataset.CLASSES
 
             if not distributed:
-                model = MMDataParallel(model, device_ids=[0])
+                model = MMDataParallel(model, device_ids=[args.gpu_id])
                 show_dir = args.show_dir
                 if show_dir is not None:
                     show_dir = osp.join(show_dir, corruption)
