@@ -467,6 +467,17 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_targets,
             bbox_weights,
             avg_factor=num_total_samples)
+
+        if self.loss_dist is not None:
+            if self.loss_dist_feature == 'fpn_feat':
+                feature = self.loss_dist_feature_value.pop(0)
+                loss_dist = self.loss_dist_single_fpn_feature(feature)
+                return loss_cls, loss_bbox, loss_dist
+            elif self.loss_dist_feature == 'pred':
+                loss_dist = self.loss_dist_single_pred(cls_score, bbox_pred)
+                return loss_cls, loss_bbox, loss_dist
+            else:
+                raise NotImplementedError
         return loss_cls, loss_bbox
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds'))
@@ -527,7 +538,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         all_anchor_list = images_to_levels(concat_anchor_list,
                                            num_level_anchors)
 
-        losses_cls, losses_bbox = multi_apply(
+        losses_values = multi_apply(
             self.loss_single,
             cls_scores,
             bbox_preds,
@@ -538,10 +549,10 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_weights_list,
             num_total_samples=num_total_samples)
 
+        rt_loss = dict(loss_cls=losses_values[0], loss_bbox=losses_values[1])
         if self.loss_dist is not None:
-            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox, loss_dist=self.loss_dist_value)
-        else:
-            return dict(loss_cls=losses_cls, loss_bbox=losses_bbox)
+            rt_loss['loss_dist'] =  losses_values[2]
+        return rt_loss
 
     @force_fp32(apply_to=('cls_score', 'bbox_pred'))
     def loss_dist_single_pred(self, cls_score, bbox_pred):
@@ -570,15 +581,8 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         return self.loss_dist(feature[0], feature[1])
         
     def loss_dist_hook_fn(self, mod, feats, outs):
-        if self.loss_dist is None: return
-        
         if self.loss_dist_feature == 'fpn_feat':
-            self.loss_dist_value = [self.loss_dist_single_fpn_feature(f) for f in feats[0]]
-        elif self.loss_dist_feature == 'pred':
-            cls_scores, bbox_preds = outs
-            self.loss_dist_value = [self.loss_dist_single_pred(c,b) for c,b in zip(cls_scores, bbox_preds)]
-        else:
-            raise NotImplementedError
+            self.loss_dist_feature_value = list(feats[0]) 
 
     def aug_test(self, feats, img_metas, rescale=False):
         """Test function with test time augmentation.
