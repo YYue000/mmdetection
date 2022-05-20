@@ -29,7 +29,7 @@ class ConcatDataset(_ConcatDataset):
             Defaults to True.
     """
 
-    def __init__(self, datasets, separate_eval=True):
+    def __init__(self, datasets, separate_eval=True, uni_cate=False):
         super(ConcatDataset, self).__init__(datasets)
         self.CLASSES = datasets[0].CLASSES
         self.PALETTE = getattr(datasets[0], 'PALETTE', None)
@@ -49,6 +49,8 @@ class ConcatDataset(_ConcatDataset):
                 flags.append(datasets[i].flag)
             self.flag = np.concatenate(flags)
 
+        self.uni_cate = uni_cate
+
     def get_cat_ids(self, idx):
         """Get category ids of concatenated dataset by index.
 
@@ -58,7 +60,6 @@ class ConcatDataset(_ConcatDataset):
         Returns:
             list[int]: All categories in the image of specified index.
         """
-
         if idx < 0:
             if -idx > len(self):
                 raise ValueError(
