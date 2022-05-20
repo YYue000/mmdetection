@@ -124,9 +124,28 @@ def train_detector(model,
 
     # build runner
     update_bn_only = cfg.optimizer.pop('update_bn_only', False)
+    update_stage_only = cfg.optimizer.pop('update_stage_only', None)
     if update_bn_only:
         from torch.nn.modules.batchnorm import _BatchNorm
         modules = [_ for _ in model.modules() if isinstance(_, _BatchNorm)]
+        modules = torch.nn.ModuleList(modules)
+        optimizer = build_optimizer(modules, cfg.optimizer)
+    elif update_stage_only:
+        grad_stages = cfg.optimizer.pop('grad_stages', [])
+        modules = []
+        for n,_ in model.named_modules():
+            for __ in update_stage_only:
+                if __ in n:
+                    modules.append(_)
+                    break
+            if len(grad_stages) > 0:
+                _.requires_grad = False
+            for __ in grad_stages:
+                if __ in n:
+                    _.requires_grad = True
+                    break
+
+
         modules = torch.nn.ModuleList(modules)
         optimizer = build_optimizer(modules, cfg.optimizer)
     else:
