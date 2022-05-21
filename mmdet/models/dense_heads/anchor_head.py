@@ -89,6 +89,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                 self.loss_dist_input = ['cls', 'loc']
             else:
                 self.loss_dist_input = [loss_dist_input]
+            self.loss_dist_weight = loss_dist.pop('loss_dist_weight', None) # weight, fg
             self.loss_dist = build_loss(loss_dist)
             self.register_forward_hook(self.loss_dist_hook_fn)
         else:
@@ -471,10 +472,10 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         if self.loss_dist is not None:
             if self.loss_dist_feature == 'fpn_feat':
                 feature = self.loss_dist_feature_value.pop(0)
-                loss_dist = self.loss_dist_single_fpn_feature(feature)
+                loss_dist = self.loss_dist_single_fpn_feature(feature, B)
                 return loss_cls, loss_bbox, loss_dist
             elif self.loss_dist_feature == 'pred':
-                loss_dist = self.loss_dist_single_pred(cls_score, bbox_pred)
+                loss_dist = self.loss_dist_single_pred(cls_score, bbox_pred, label_weights, bbox_weights, B)
                 return loss_cls, loss_bbox, loss_dist
             else:
                 raise NotImplementedError
@@ -555,28 +556,41 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         return rt_loss
 
     @force_fp32(apply_to=('cls_score', 'bbox_pred'))
-    def loss_dist_single_pred(self, cls_score, bbox_pred):
+    def loss_dist_single_pred(self, cls_score, bbox_pred, label_weights, bbox_weights, B):
         # distance loss
         if self.loss_dist is None:
             return None
         
-        B = cls_score.shape[0]
         assert self.loss_dist_feature == 'pred'
         box_feature = bbox_pred.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)
         cls_feature = cls_score.reshape(B//2, 2, -1, self.cls_out_channels).permute(1, 0, 2, 3).reshape(2, -1, self.cls_out_channels)
 
+        if self.loss_dist_weight is None:
+            label_weights = None
+            bbox_weights = None
+        #elif self.loss_dist_weight == 'fg':
+        elif self.loss_dist_weight == 'weight':
+            _label_weights = label_weights.reshape(B//2, 2, -1).permute(1, 0, 2).reshape(2, -1)[0].to(torch.int64)
+            label_weights = cls_feature.new_zeros(cls_feature.shape[1:])
+            label_weights[_label_weights] = 1.0
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+        else:
+            raise NotImplementedError
+
         loss_dist_cls, loss_dist_box = 0, 0
+
         if 'cls' in self.loss_dist_input:
-            loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1])
+            loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1], weight=label_weights)
         if 'loc' in self.loss_dist_input:
-            loss_dist_box = self.loss_dist(box_feature[0], box_feature[1])
+            loss_dist_box = self.loss_dist(box_feature[0], box_feature[1], weight=bbox_weights)
 
         loss_dist = loss_dist_cls + loss_dist_box
         return loss_dist
 
     @force_fp32(apply_to=('feature'))
-    def loss_dist_single_fpn_feature(self, feature):
-        B = feature.shape[0]
+    def loss_dist_single_fpn_feature(self, feature, B):
+        B0 = feature.shape[0]
+        assert B==B0, f'{B} {B0}'
         feature = feature.reshape(B//2, 2, -1).permute(1,0,2)
         return self.loss_dist(feature[0], feature[1])
         
