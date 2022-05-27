@@ -301,6 +301,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         if len(neg_inds) > 0:
             label_weights[neg_inds] = 1.0
 
+
         # map up to original set of anchors
         if unmap_outputs:
             num_total_anchors = flat_anchors.size(0)
@@ -475,7 +476,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
                 loss_dist = self.loss_dist_single_fpn_feature(feature, B)
                 return loss_cls, loss_bbox, loss_dist
             elif self.loss_dist_feature == 'pred':
-                loss_dist = self.loss_dist_single_pred(cls_score, bbox_pred, label_weights, bbox_weights, B)
+                loss_dist = self.loss_dist_single_pred(cls_score, bbox_pred, label_weights, bbox_weights, B, num_total_samples)
                 return loss_cls, loss_bbox, loss_dist
             else:
                 raise NotImplementedError
@@ -556,7 +557,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         return rt_loss
 
     @force_fp32(apply_to=('cls_score', 'bbox_pred'))
-    def loss_dist_single_pred(self, cls_score, bbox_pred, label_weights, bbox_weights, B):
+    def loss_dist_single_pred(self, cls_score, bbox_pred, label_weights, bbox_weights, B, num_total_samples):
         # distance loss
         if self.loss_dist is None:
             return None
@@ -564,27 +565,66 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
         assert self.loss_dist_feature == 'pred'
         box_feature = bbox_pred.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)
         cls_feature = cls_score.reshape(B//2, 2, -1, self.cls_out_channels).permute(1, 0, 2, 3).reshape(2, -1, self.cls_out_channels)
+        avg_cls, avg_bbox = None, None 
 
         if self.loss_dist_weight is None:
             label_weights = None
             bbox_weights = None
-        #elif self.loss_dist_weight == 'fg':
         elif self.loss_dist_weight == 'weight':
-            _label_weights = label_weights.reshape(B//2, 2, -1).permute(1, 0, 2).reshape(2, -1)[0].to(torch.int64)
-            label_weights = cls_feature.new_zeros(cls_feature.shape[1:])
-            label_weights[_label_weights] = 1.0
+            _label_weights = label_weights.reshape(B//2, 2, -1).permute(1, 0, 2).reshape(2, -1)[0]
+            label_weights = torch.tile(_label_weights, [self.cls_out_channels, 1]).transpose(0,1)
             bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+        
+        elif self.loss_dist_weight == 'avg-weight':
+            _label_weights = label_weights.reshape(B//2, 2, -1).permute(1, 0, 2).reshape(2, -1)[0]
+            label_weights = torch.tile(_label_weights, [self.cls_out_channels, 1]).transpose(0,1)
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+            
+            #avg_cls = torch.sum(_label_weights)
+            #avg_bbox = torch.sum(bbox_weights[:,0])
+            avg_cls = torch.clamp(torch.sum(label_weights), 1.0) 
+            avg_bbox = torch.clamp(torch.sum(bbox_weights), 1.0) 
+        elif self.loss_dist_weight == 'loc_only':
+            label_weights = None
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+        elif self.loss_dist_weight == 'avg-loc_only':
+            label_weights = None
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+            avg_cls = None
+            avg_bbox = torch.clamp(torch.sum(bbox_weights[:,0]), 1.0) 
+        elif self.loss_dist_weight == 'fg':
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+            label_weights = torch.tile(bbox_weights[:,0], [self.cls_out_channels, 1]).transpose(0,1)
+        elif self.loss_dist_weight == 'avg-fg':
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+            label_weights = torch.tile(bbox_weights[:,0], [self.cls_out_channels, 1]).transpose(0,1)
+
+            avg_bbox = torch.clamp(torch.sum(bbox_weights), 1.0)
+            avg_cls = avg_bbox
         else:
             raise NotImplementedError
 
         loss_dist_cls, loss_dist_box = 0, 0
 
         if 'cls' in self.loss_dist_input:
-            loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1], weight=label_weights)
+            loss_dist_cls = self.loss_dist(cls_feature[0], cls_feature[1], weight=label_weights, avg_factor=avg_cls)
         if 'loc' in self.loss_dist_input:
-            loss_dist_box = self.loss_dist(box_feature[0], box_feature[1], weight=bbox_weights)
-
+            loss_dist_box = self.loss_dist(box_feature[0], box_feature[1], weight=bbox_weights, avg_factor=avg_bbox)
+        
         loss_dist = loss_dist_cls + loss_dist_box
+
+        ### debug
+        """
+        if self.loss_dist_weight == 'avg-weight':
+            import logging
+            from mmcv.utils import get_logger
+            logger = get_logger(name='mmdet', log_level=logging.INFO)
+            logger.info(f'{loss_dist_cls} {loss_dist_box} {loss_dist} {avg_bbox} {avg_cls}')
+            assert not torch.isnan(loss_dist)
+        """
+        ###debug
+
+
         return loss_dist
 
     @force_fp32(apply_to=('feature'))
