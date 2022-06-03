@@ -90,6 +90,7 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             else:
                 self.loss_dist_input = [loss_dist_input]
             self.loss_dist_weight = loss_dist.pop('loss_dist_weight', None) # weight, fg
+            self.loss_dist_weight_expand = False if loss_dist['type']=='KnowledgeDistillationKLDivLoss' else True
             self.loss_dist = build_loss(loss_dist)
             self.register_forward_hook(self.loss_dist_hook_fn)
         else:
@@ -601,6 +602,21 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
 
             avg_bbox = torch.clamp(torch.sum(bbox_weights), 1.0)
             avg_cls = avg_bbox
+        elif self.loss_dist_weight == 'sample':
+            neg_pos_ratio = 3
+            bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+            if self.loss_dist_weight_expand:
+                label_weights = torch.tile(bbox_weights[:,0], [self.cls_out_channels, 1]).transpose(0,1)
+            else:
+                label_weights = bbox_weights[:,0]
+                bbox_weights = label_weights
+
+            avg_bbox = torch.clamp(torch.sum(bbox_weights[:,0]), 1.0)
+            neg = int((neg_pos_ratio*avg_bbox).item())
+            if neg < len(label_weights):
+                sample_idx = torch.randperm(neg)
+                label_weights[sample_idx] = 1.0
+            
         else:
             raise NotImplementedError
 
