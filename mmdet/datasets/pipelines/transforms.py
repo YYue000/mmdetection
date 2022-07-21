@@ -2789,3 +2789,22 @@ class YOLOXHSVRandomAug:
         repr_str += f'saturation_delta={self.saturation_delta}, '
         repr_str += f'value_delta={self.value_delta})'
         return repr_str
+
+@PIPELINES.register_module()
+class FakeAugMix:
+    def __init__(self, corruption, severity, width=2):
+        self.corruption = corruption
+        self.severity = severity
+        self.width = width
+
+    def __call__(self, results):
+        img = results['img']
+        _img = corrupt(img, corruption_name=self.corruption, severity=self.severity)
+        w = np.random.random()
+        if self.width ==3 and np.random.random() < 0.5:
+            __img = corrupt(_img, corruption_name=self.corruption, severity=self.severity)
+            w2 = np.random.random()
+            results['img'] = w*img+(1-w)*w2*_img+(1-w)*(1-w2)*__img
+        else:
+            results['img'] = w*img+(1-w)*_img
+        return results
