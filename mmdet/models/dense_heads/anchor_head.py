@@ -600,19 +600,19 @@ class AnchorHead(BaseDenseHead, BBoxTestMixin):
             bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
             label_weights = torch.tile(bbox_weights[:,0], [self.cls_out_channels, 1]).transpose(0,1)
 
-            avg_bbox = torch.clamp(torch.sum(bbox_weights), 1.0)
+            avg_bbox = torch.clamp(torch.sum(bbox_weights[:,0]), 1.0)
             avg_cls = avg_bbox
         elif self.loss_dist_weight == 'sample':
             neg_pos_ratio = 3
             bbox_weights = bbox_weights.reshape(B//2, 2, -1, 4).permute(1, 0, 2, 3).reshape(2, -1, 4)[0]
+            pos = torch.clamp(torch.sum(bbox_weights[:,0]), 1.0)
             if self.loss_dist_weight_expand:
                 label_weights = torch.tile(bbox_weights[:,0], [self.cls_out_channels, 1]).transpose(0,1)
             else:
                 label_weights = bbox_weights[:,0]
                 bbox_weights = label_weights
 
-            avg_bbox = torch.clamp(torch.sum(bbox_weights[:,0]), 1.0)
-            neg = int((neg_pos_ratio*avg_bbox).item())
+            neg = int((neg_pos_ratio*pos).item())
             if neg < len(label_weights):
                 sample_idx = torch.randperm(neg)
                 label_weights[sample_idx] = 1.0
