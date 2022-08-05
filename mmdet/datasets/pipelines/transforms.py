@@ -298,7 +298,7 @@ class Resize:
         else:
             if not self.override:
                 assert 'scale_factor' not in results, (
-                    'scale and scale_factor cannot be both set.')
+                    f'scale and scale_factor cannot be both set. {results.keys()}')
             else:
                 results.pop('scale')
                 if 'scale_factor' in results:
@@ -2332,7 +2332,8 @@ class MixUp:
                  min_area_ratio=0.2,
                  max_aspect_ratio=20,
                  bbox_clip_border=True,
-                 skip_filter=True):
+                 skip_filter=True,
+                 w=0.5):
         assert isinstance(img_scale, tuple)
         self.dynamic_scale = img_scale
         self.ratio_range = ratio_range
@@ -2344,6 +2345,7 @@ class MixUp:
         self.max_aspect_ratio = max_aspect_ratio
         self.bbox_clip_border = bbox_clip_border
         self.skip_filter = skip_filter
+        self.w = w
 
     def __call__(self, results):
         """Call function to make a mixup of image.
@@ -2396,6 +2398,9 @@ class MixUp:
 
         retrieve_results = results['mix_results'][0]
         retrieve_img = retrieve_results['img']
+        
+        #debug
+        #_, __ = retrieve_img.shape[:2]
 
         jit_factor = random.uniform(*self.ratio_range)
         is_filp = random.uniform(0, 1) > self.flip_ratio
@@ -2431,6 +2436,9 @@ class MixUp:
         ori_img = results['img']
         origin_h, origin_w = out_img.shape[:2]
         target_h, target_w = ori_img.shape[:2]
+        #print(f'jit {jit_factor}')
+        #print(f'{_} {retrieve_img.shape[0]} {origin_h} {target_h} ')
+        #print(f'{__} {retrieve_img.shape[1]} {origin_w} {target_w} ')
         padded_img = np.zeros(
             (max(origin_h, target_h), max(origin_w,
                                           target_w), 3)).astype(np.uint8)
@@ -2472,7 +2480,12 @@ class MixUp:
 
         # 8. mix up
         ori_img = ori_img.astype(np.float32)
-        mixup_img = 0.5 * ori_img + 0.5 * padded_cropped_img.astype(np.float32)
+        if self.w == 'rand':
+            w = random.random()
+        else:
+            w = self.w
+        mixup_img = w * ori_img + w * padded_cropped_img.astype(np.float32)
+        #print(f'mixup {mixup_img.shape}')
 
         retrieve_gt_labels = retrieve_results['gt_labels']
         if not self.skip_filter:
@@ -2808,3 +2821,359 @@ class FakeAugMix:
         else:
             results['img'] = w*img+(1-w)*_img
         return results
+
+@PIPELINES.register_module()
+class CMixUp:
+    def __init__(self, corruption, severity, w='rand'):
+        self.corruption = corruption
+        self.severity = severity
+        self.w = w
+
+    def __call__(self, results):
+        img = results['img']
+        _img = corrupt(img, corruption_name=self.corruption, severity=self.severity)
+        if self.w == 'rand':
+            w = np.random.random()
+        else:
+            w = self.w
+        results['img'] = w*img+(1-w)*_img
+        return results
+
+
+@PIPELINES.register_module()
+class BGMixUp:
+    def __init__(self, w,
+                img_scale=(640, 640),
+                 ratio_range=(0.5, 1.5),
+                 flip_ratio=0.5,
+                 pad_val=114,
+                 max_iters=15,
+                 min_bbox_size=5,
+                 min_area_ratio=0.2,
+                 max_aspect_ratio=20,
+                 bbox_clip_border=True,
+                 skip_filter=True):
+        self.w = w
+        self.dynamic_scale = img_scale
+        self.ratio_range = ratio_range
+        self.flip_ratio = flip_ratio
+        self.pad_val = pad_val
+        self.max_iters = max_iters
+        self.min_bbox_size = min_bbox_size
+        self.min_area_ratio = min_area_ratio
+        self.max_aspect_ratio = max_aspect_ratio
+        self.bbox_clip_border = bbox_clip_border
+        self.skip_filter = skip_filter
+
+
+    def __call__(self, results):
+        
+        assert 'mix_results' in results
+        assert len(
+            results['mix_results']) == 1, 'MixUp only support 2 images now !'
+
+        if results['mix_results'][0]['gt_bboxes'].shape[0] == 0:
+            # empty bbox
+            return results
+
+        retrieve_results = results['mix_results'][0]
+        retrieve_img = retrieve_results['img']
+
+        jit_factor = random.uniform(*self.ratio_range)
+        is_filp = random.uniform(0, 1) > self.flip_ratio
+
+        if len(retrieve_img.shape) == 3:
+            out_img = np.ones(
+                (self.dynamic_scale[0], self.dynamic_scale[1], 3),
+                dtype=retrieve_img.dtype) * self.pad_val
+        else:
+            out_img = np.ones(
+                self.dynamic_scale, dtype=retrieve_img.dtype) * self.pad_val
+
+        # 1. keep_ratio resize
+        scale_ratio = min(self.dynamic_scale[0] / retrieve_img.shape[0],
+                          self.dynamic_scale[1] / retrieve_img.shape[1])
+        retrieve_img = mmcv.imresize(
+            retrieve_img, (int(retrieve_img.shape[1] * scale_ratio),
+                           int(retrieve_img.shape[0] * scale_ratio)))
+
+        # 2. paste
+        out_img[:retrieve_img.shape[0], :retrieve_img.shape[1]] = retrieve_img
+
+        # 3. scale jit
+        scale_ratio *= jit_factor
+        out_img = mmcv.imresize(out_img, (int(out_img.shape[1] * jit_factor),
+                                          int(out_img.shape[0] * jit_factor)))
+
+        # 4. flip
+        if is_filp:
+            out_img = out_img[:, ::-1, :]
+
+        # 5. random crop
+        ori_img = results['img']
+        origin_h, origin_w = out_img.shape[:2]
+        target_h, target_w = ori_img.shape[:2]
+        padded_img = np.zeros(
+            (max(origin_h, target_h), max(origin_w,
+                                          target_w), 3)).astype(np.uint8)
+        padded_img[:origin_h, :origin_w] = out_img
+
+        x_offset, y_offset = 0, 0
+        if padded_img.shape[0] > target_h:
+            y_offset = random.randint(0, padded_img.shape[0] - target_h)
+        if padded_img.shape[1] > target_w:
+            x_offset = random.randint(0, padded_img.shape[1] - target_w)
+        padded_cropped_img = padded_img[y_offset:y_offset + target_h,
+                                        x_offset:x_offset + target_w]
+
+        # 6. adjust bbox
+        retrieve_gt_bboxes = retrieve_results['gt_bboxes']
+        retrieve_gt_bboxes[:, 0::2] = retrieve_gt_bboxes[:, 0::2] * scale_ratio
+        retrieve_gt_bboxes[:, 1::2] = retrieve_gt_bboxes[:, 1::2] * scale_ratio
+        if self.bbox_clip_border:
+            retrieve_gt_bboxes[:, 0::2] = np.clip(retrieve_gt_bboxes[:, 0::2],
+                                                  0, origin_w)
+            retrieve_gt_bboxes[:, 1::2] = np.clip(retrieve_gt_bboxes[:, 1::2],
+                                                  0, origin_h)
+
+        if is_filp:
+            retrieve_gt_bboxes[:, 0::2] = (
+                origin_w - retrieve_gt_bboxes[:, 0::2][:, ::-1])
+
+        # 7. filter
+        cp_retrieve_gt_bboxes = retrieve_gt_bboxes.copy()
+        cp_retrieve_gt_bboxes[:, 0::2] = \
+            cp_retrieve_gt_bboxes[:, 0::2] - x_offset
+        cp_retrieve_gt_bboxes[:, 1::2] = \
+            cp_retrieve_gt_bboxes[:, 1::2] - y_offset
+        if self.bbox_clip_border:
+            cp_retrieve_gt_bboxes[:, 0::2] = np.clip(
+                cp_retrieve_gt_bboxes[:, 0::2], 0, target_w)
+            cp_retrieve_gt_bboxes[:, 1::2] = np.clip(
+                cp_retrieve_gt_bboxes[:, 1::2], 0, target_h)
+
+        # 8. mix up
+        ori_img = ori_img.astype(np.float32)
+        mixup_img = self.w * ori_img + (1-self.w) * padded_cropped_img.astype(np.float32)
+
+        retrieve_gt_labels = retrieve_results['gt_labels']
+        if not self.skip_filter:
+            keep_list = self._filter_box_candidates(retrieve_gt_bboxes.T,
+                                                    cp_retrieve_gt_bboxes.T)
+
+            if keep_list.sum() >= 1.0:
+                retrieve_gt_labels = retrieve_gt_labels[keep_list]
+                cp_retrieve_gt_bboxes = cp_retrieve_gt_bboxes[keep_list]
+        
+
+        """
+        mixup_gt_bboxes = np.concatenate(
+            (results['gt_bboxes'], cp_retrieve_gt_bboxes), axis=0)
+        mixup_gt_labels = np.concatenate(
+            (results['gt_labels'], retrieve_gt_labels), axis=0)
+        """
+        mixup_gt_bboxes = cp_retrieve_gt_bboxes
+        mixup_gt_labels = retrieve_gt_labels
+
+        # remove outside bbox
+        inside_inds = find_inside_bboxes(mixup_gt_bboxes, target_h, target_w)
+        mixup_gt_bboxes = mixup_gt_bboxes[inside_inds]
+        mixup_gt_labels = mixup_gt_labels[inside_inds]
+
+        results['img'] = mixup_img.astype(np.uint8)
+        results['img_shape'] = mixup_img.shape
+        results['gt_bboxes'] = mixup_gt_bboxes
+        results['gt_labels'] = mixup_gt_labels
+
+
+        return results
+
+    def get_indexes(self, dataset):
+        """Call function to collect indexes.
+
+        Args:
+            dataset (:obj:`MultiImageMixDataset`): The dataset.
+
+        Returns:
+            list: indexes.
+        """
+
+        for i in range(self.max_iters):
+            index = random.randint(0, len(dataset))
+            gt_bboxes_i = dataset.get_ann_info(index)['bboxes']
+            if len(gt_bboxes_i) != 0:
+                break
+
+        return index
+
+    def _filter_box_candidates(self, bbox1, bbox2):
+        """Compute candidate boxes which include following 5 things:
+
+        bbox1 before augment, bbox2 after augment, min_bbox_size (pixels),
+        min_area_ratio, max_aspect_ratio.
+        """
+
+        w1, h1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+        w2, h2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
+        ar = np.maximum(w2 / (h2 + 1e-16), h2 / (w2 + 1e-16))
+        return ((w2 > self.min_bbox_size)
+                & (h2 > self.min_bbox_size)
+                & (w2 * h2 / (w1 * h1 + 1e-16) > self.min_area_ratio)
+                & (ar < self.max_aspect_ratio))
+
+
+@PIPELINES.register_module()
+class NMixUp:
+    def __init__(self, w,
+                img_scale=(640, 640),
+                 flip_ratio=0.5,
+                 pad_val=114,
+                 max_iters=15,
+                 min_bbox_size=5,
+                 min_area_ratio=0.2,
+                 max_aspect_ratio=20,
+                 bbox_clip_border=True,
+                 skip_filter=True):
+        self.w = w
+        self.dynamic_scale = img_scale
+        self.ratio_range = ratio_range
+        self.flip_ratio = flip_ratio
+        self.pad_val = pad_val
+        self.max_iters = max_iters
+        self.min_bbox_size = min_bbox_size
+        self.min_area_ratio = min_area_ratio
+        self.max_aspect_ratio = max_aspect_ratio
+        self.bbox_clip_border = bbox_clip_border
+        self.skip_filter = skip_filter
+
+
+    def __call__(self, results):
+        
+        assert 'mix_results' in results
+        assert len(
+            results['mix_results']) == 1, 'MixUp only support 2 images now !'
+
+        if results['mix_results'][0]['gt_bboxes'].shape[0] == 0:
+            # empty bbox
+            return results
+
+        retrieve_results = results['mix_results'][0]
+        retrieve_img = retrieve_results['img']
+
+        is_filp = random.uniform(0, 1) > self.flip_ratio
+
+        if len(retrieve_img.shape) == 3:
+            out_img = np.ones(
+                (self.dynamic_scale[0], self.dynamic_scale[1], 3),
+                dtype=retrieve_img.dtype) * self.pad_val
+        else:
+            out_img = np.ones(
+                self.dynamic_scale, dtype=retrieve_img.dtype) * self.pad_val
+
+        # 1. keep_ratio resize
+        scale_ratio = min(self.dynamic_scale[0] / retrieve_img.shape[0],
+                          self.dynamic_scale[1] / retrieve_img.shape[1])
+        retrieve_img = mmcv.imresize(
+            retrieve_img, (int(retrieve_img.shape[1] * scale_ratio),
+                           int(retrieve_img.shape[0] * scale_ratio)))
+
+        # 2. paste
+        out_img[:retrieve_img.shape[0], :retrieve_img.shape[1]] = retrieve_img
+
+        # 4. flip
+        if is_filp:
+            out_img = out_img[:, ::-1, :]
+
+        # 5. random crop
+        ori_img = results['img']
+        origin_h, origin_w = out_img.shape[:2]
+        target_h, target_w = ori_img.shape[:2]
+        padded_img = np.zeros(
+            (max(origin_h, target_h), max(origin_w,
+                                          target_w), 3)).astype(np.uint8)
+        padded_img[:origin_h, :origin_w] = out_img
+
+        x_offset, y_offset = 0, 0
+        if padded_img.shape[0] > target_h:
+            y_offset = random.randint(0, padded_img.shape[0] - target_h)
+        if padded_img.shape[1] > target_w:
+            x_offset = random.randint(0, padded_img.shape[1] - target_w)
+        padded_cropped_img = padded_img[y_offset:y_offset + target_h,
+                                        x_offset:x_offset + target_w]
+
+        # 6. adjust bbox
+        retrieve_gt_bboxes = retrieve_results['gt_bboxes']
+        retrieve_gt_bboxes[:, 0::2] = retrieve_gt_bboxes[:, 0::2] * scale_ratio
+        retrieve_gt_bboxes[:, 1::2] = retrieve_gt_bboxes[:, 1::2] * scale_ratio
+        if self.bbox_clip_border:
+            retrieve_gt_bboxes[:, 0::2] = np.clip(retrieve_gt_bboxes[:, 0::2],
+                                                  0, origin_w)
+            retrieve_gt_bboxes[:, 1::2] = np.clip(retrieve_gt_bboxes[:, 1::2],
+                                                  0, origin_h)
+
+        if is_filp:
+            retrieve_gt_bboxes[:, 0::2] = (
+                origin_w - retrieve_gt_bboxes[:, 0::2][:, ::-1])
+
+        # 7. filter
+        cp_retrieve_gt_bboxes = retrieve_gt_bboxes.copy()
+        cp_retrieve_gt_bboxes[:, 0::2] = \
+            cp_retrieve_gt_bboxes[:, 0::2] - x_offset
+        cp_retrieve_gt_bboxes[:, 1::2] = \
+            cp_retrieve_gt_bboxes[:, 1::2] - y_offset
+        if self.bbox_clip_border:
+            cp_retrieve_gt_bboxes[:, 0::2] = np.clip(
+                cp_retrieve_gt_bboxes[:, 0::2], 0, target_w)
+            cp_retrieve_gt_bboxes[:, 1::2] = np.clip(
+                cp_retrieve_gt_bboxes[:, 1::2], 0, target_h)
+
+        # 8. mix up
+        ori_img = ori_img.astype(np.float32)
+        mixup_img = self.w * ori_img + (1-self.w) * padded_cropped_img.astype(np.float32)
+
+        retrieve_gt_labels = retrieve_results['gt_labels']
+        if not self.skip_filter:
+            keep_list = self._filter_box_candidates(retrieve_gt_bboxes.T,
+                                                    cp_retrieve_gt_bboxes.T)
+
+            if keep_list.sum() >= 1.0:
+                retrieve_gt_labels = retrieve_gt_labels[keep_list]
+                cp_retrieve_gt_bboxes = cp_retrieve_gt_bboxes[keep_list]
+        
+
+        mixup_gt_bboxes = np.concatenate(
+            (results['gt_bboxes'], cp_retrieve_gt_bboxes), axis=0)
+        mixup_gt_labels = np.concatenate(
+            (results['gt_labels'], retrieve_gt_labels), axis=0)
+
+        # remove outside bbox
+        inside_inds = find_inside_bboxes(mixup_gt_bboxes, target_h, target_w)
+        mixup_gt_bboxes = mixup_gt_bboxes[inside_inds]
+        mixup_gt_labels = mixup_gt_labels[inside_inds]
+
+        results['img'] = mixup_img.astype(np.uint8)
+        results['img_shape'] = mixup_img.shape
+        results['gt_bboxes'] = mixup_gt_bboxes
+        results['gt_labels'] = mixup_gt_labels
+
+
+        return results
+
+
+
+    def _filter_box_candidates(self, bbox1, bbox2):
+        """Compute candidate boxes which include following 5 things:
+
+        bbox1 before augment, bbox2 after augment, min_bbox_size (pixels),
+        min_area_ratio, max_aspect_ratio.
+        """
+
+        w1, h1 = bbox1[2] - bbox1[0], bbox1[3] - bbox1[1]
+        w2, h2 = bbox2[2] - bbox2[0], bbox2[3] - bbox2[1]
+        ar = np.maximum(w2 / (h2 + 1e-16), h2 / (w2 + 1e-16))
+        return ((w2 > self.min_bbox_size)
+                & (h2 > self.min_bbox_size)
+                & (w2 * h2 / (w1 * h1 + 1e-16) > self.min_area_ratio)
+                & (ar < self.max_aspect_ratio))
+
+
