@@ -67,9 +67,9 @@ def parse_requirements(fname='requirements.txt', with_version=True):
     CommandLine:
         python -c "import setup; print(setup.parse_requirements())"
     """
+    import re
     import sys
     from os.path import exists
-    import re
     require_fpath = fname
 
     def parse_line(line):
@@ -214,6 +214,7 @@ if __name__ == '__main__':
             'tests': parse_requirements('requirements/tests.txt'),
             'build': parse_requirements('requirements/build.txt'),
             'optional': parse_requirements('requirements/optional.txt'),
+            'mim': parse_requirements('requirements/mminstall.txt'),
         },
         ext_modules=[],
         cmdclass={'build_ext': BuildExtension},
