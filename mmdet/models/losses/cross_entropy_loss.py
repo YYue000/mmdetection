@@ -2,10 +2,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from functools import partial
 
 from ..builder import LOSSES
 from .utils import weight_reduce_loss
 
+from .fuzzy_ce_loss import fz_binary_cross_entropy
 
 def cross_entropy(pred,
                   label,
@@ -164,12 +166,14 @@ def mask_cross_entropy(pred,
         pred_slice, target, weight=class_weight, reduction='mean')[None]
 
 
+
 @LOSSES.register_module()
 class CrossEntropyLoss(nn.Module):
 
     def __init__(self,
                  use_sigmoid=False,
                  use_mask=False,
+                 use_fuzzy=None,
                  reduction='mean',
                  class_weight=None,
                  ignore_index=None,
@@ -198,7 +202,9 @@ class CrossEntropyLoss(nn.Module):
         self.class_weight = class_weight
         self.ignore_index = ignore_index
 
-        if self.use_sigmoid:
+        if use_fuzzy is not None:
+            self.cls_criterion = partial(fz_binary_cross_entropy, fz=use_fuzzy)
+        elif self.use_sigmoid:
             self.cls_criterion = binary_cross_entropy
         elif self.use_mask:
             self.cls_criterion = mask_cross_entropy
@@ -249,3 +255,6 @@ class CrossEntropyLoss(nn.Module):
             ignore_index=ignore_index,
             **kwargs)
         return loss_cls
+
+
+
